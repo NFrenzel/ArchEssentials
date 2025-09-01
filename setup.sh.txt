@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+
+echo "==> Checking for sudo..."
+sudo -v
+
+echo "==> Syncing mirrors (reflector) & system update..."
+if ! pacman -Qi reflector >/dev/null 2>&1; then
+  sudo pacman -Sy --noconfirm reflector
+fi
+# Update the 10 fastest HTTPS mirrors in the last 48h
+sudo reflector --latest 20 --protocol https --sort rate --save /etc/pacman.d/mirrorlist || true
+
+echo "==> Full system upgrade..."
+sudo pacman -Syu --noconfirm
+
+echo "==> Installing base essentials..."
+sudo pacman -S --needed --noconfirm \
+  base-devel git wget curl unzip zip gzip tar rsync jq \
+  openssh gnupg \
+  networkmanager network-manager-applet \
+  pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber \
+  bluez bluez-utils \
+  xdg-user-dirs \
+  ufw \
+  reflector \
+  man-db man-pages
+
+echo "==> Enabling core services..."
+sudo systemctl enable --now NetworkManager
+sudo systemctl enable --now bluetooth || true
+sudo systemctl enable --now ufw
+sudo ufw default deny || true
+sudo ufw allow 22/tcp || true
+sudo ufw enable || true
+
+echo "==> Installing dev/tooling & QoL CLI..."
+sudo pacman -S --needed --noconfirm \
+  neovim nano micro \
+  ripgrep fd fzf bat exa tree \
+  htop btop bmon \
+  tmux \
+  neofetch \
+  python python-pip \
+  cmake pkgconf
+
+echo "==> Installing browsers & GUI helpers..."
+sudo pacman -S --needed --noconfirm brave
+
+echo "==> Installing fonts..."
+sudo pacman -S --needed --noconfirm \
+  ttf-dejavu noto-fonts \
+  ttf-firacode-nerd
+
+echo "==> Installing image/wallpaper tools..."
+sudo pacman -S --needed --noconfirm feh
+
+echo "==> Creating XDG user dirs (Desktop, Documents, etc.)..."
+xdg-user-dirs-update
+
+# -------------------------------
+# Chicago95 setup
+# -------------------------------
+echo "==> Installing Chicago95 theme..."
+mkdir -p "$HOME/.themes" "$HOME/.icons"
+tmpdir="$(mktemp -d)"
+pushd "$tmpdir" >/dev/null
+if [ ! -d Chicago95 ]; then
+  git clone https://github.com/grassmunk/Chicago95.git
+fi
+cd Chicago95
+chmod +x ./install.sh || true
+./install.sh || true
+popd >/dev/null
+rm -rf "$tmpdir"
+
+echo "==> Setting wallpaper..."
+mkdir -p "$HOME/Pictures"
+if [ ! -f "$HOME/Pictures/win95-wallpaper.jpg" ]; then
+  wget -O "$HOME/Pictures/win95-wallpaper.jpg" https://wallpaperaccess.com/full/3028550.jpg || true
+fi
+# Only attempt if a graphical session is likely running
+if command -v feh >/dev/null 2>&1; then
+  feh --bg-scale "$HOME/Pictures/win95-wallpaper.jpg" || true
+fi
+
+echo '==> Adding screenfetch to .bashrc (if not already present)...'
+touch "$HOME/.bashrc"
+if ! grep -qE '(^|\s)screenfetch(\s|$)' "$HOME/.bashrc"; then
+  echo "screenfetch" >> "$HOME/.bashrc"
+fi
+
+# -------------------------------
+# Starter dotfiles 
+# -------------------------------
+
+echo "==> Seeding dotfiles (non-destructive)..."
+
+# Git
+if [ ! -f "$HOME/.gitconfig" ]; then
+  cat > "$HOME/.gitconfig" << 'EOF'
+[user]
+    name = Your Name
+    email = you@example.com
+[pull]
+    rebase = false
+[init]
+    defaultBranch = main
+[core]
+    editor = nvim
+[include]
+    path = ~/.gitconfig.local
+[commit]
+    gpgsign = false
+EOF
+fi
+touch "$HOME/.gitconfig.local"
+
+# Global gitignore
+if [ ! -f "$HOME/.gitignore_global" ]; then
+  cat > "$HOME/.gitignore_global" << 'EOF'
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+*.swp
+*~
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+build/
+
+# Unity 
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild*/
+[Ll]ogs/
+UserSettings/
+MemoryCaptures/
+.crash/
+*.csproj
+*.sln
+*.unityproj
+*.pidb
+*.user
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+EOF
+  git config --global core.excludesfile "$HOME/.gitignore_global" || true
+fi
+
+# Shell aliases
+if [ ! -f "$HOME/.bash_aliases" ]; then
+  cat > "$HOME/.bash_aliases" << 'EOF'
+alias ll='exa -lah --git'
+alias cat='bat --style=plain'
+alias gs='git status -sb'
+alias gp='git pull --rebase --autostash'
+alias gco='git checkout'
+alias gl='git log --oneline --graph --decorate -n 30'
+EOF
+  if ! grep -q '.bash_aliases' "$HOME/.bashrc"; then
+    echo -e '\n# Load aliases\n[ -f "$HOME/.bash_aliases" ] && . "$HOME/.bash_aliases"' >> "$HOME/.bashrc"
+  fi
+fi
+
+# Neovim minimal config
+mkdir -p "$HOME/.config/nvim"
+if [ ! -f "$HOME/.config/nvim/init.lua" ]; then
+  cat > "$HOME/.config/nvim/init.lua" << 'EOF'
+vim.opt.number = true
+vim.opt.relativenumber = true
+vim.opt.tabstop = 2
+vim.opt.shiftwidth = 2
+vim.opt.expandtab = true
+vim.opt.termguicolors = true
+vim.opt.clipboard = "unnamedplus"
+-- Basic keymaps
+vim.keymap.set('n', '<Space>', '<Nop>', { silent = true, noremap = true })
+EOF
+fi
+
+# Tmux
+if [ ! -f "$HOME/.tmux.conf" ]; then
+  cat > "$HOME/.tmux.conf" << 'EOF'
+set -g mouse on
+setw -g mode-keys vi
+set -g history-limit 10000
+bind r source-file ~/.tmux.conf \; display-message "tmux reloaded"
+EOF
+fi
+
+# Starship prompt 
+if ! command -v starship >/dev/null 2>&1; then
+  echo "==> (Optional) Installing starship prompt..."
+  sudo pacman -S --needed --noconfirm starship || true
+fi
+mkdir -p "$HOME/.config"
+if [ ! -f "$HOME/.config/starship.toml" ]; then
+  cat > "$HOME/.config/starship.toml" << 'EOF'
+add_newline = false
+format = "$all"
+EOF
+  if ! grep -q 'starship init bash' "$HOME/.bashrc"; then
+    echo 'eval "$(starship init bash)"' >> "$HOME/.bashrc"
+  fi
+fi
+
+# -------------------------------
+# AUR helper: paru (builds from source)
+# -------------------------------
+if ! command -v paru >/dev/null 2>&1; then
+  echo "==> Installing paru (AUR helper)..."
+  tmp="$(mktemp -d)"
+  pushd "$tmp" >/dev/null
+  sudo pacman -S --needed --noconfirm rust base-devel
+  git clone https://aur.archlinux.org/paru.git
+  cd paru
+  makepkg -si --noconfirm
+  popd >/dev/null
+  rm -rf "$tmp"
+fi
+
+# (comment/uncomment as needed)
+# paru -S --needed --noconfirm google-chrome visual-studio-code-bin
+
+echo "==> All done! Reboot to ensure services and theme changes fully apply."
